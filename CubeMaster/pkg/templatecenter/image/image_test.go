@@ -49,9 +49,21 @@ func installFakeCommand(t *testing.T, dir, name, body string) {
 	}
 }
 
+func disableEngineClient(t *testing.T) {
+	t.Helper()
+	orig := newEngineClient
+	newEngineClient = func() (engineClient, error) {
+		return nil, errors.New("engine unavailable")
+	}
+	t.Cleanup(func() {
+		newEngineClient = orig
+	})
+}
+
 func TestPrepareSourceImageSkipsPullWhenImageExistsLocally(t *testing.T) {
 	patches := gomonkey.NewPatches()
 	defer patches.Reset()
+	disableEngineClient(t)
 	withExecutableLookPath(t, func(file string) (string, error) {
 		return "", errors.New("not found")
 	})
@@ -88,6 +100,7 @@ func TestPrepareSourceImageSkipsPullWhenImageExistsLocally(t *testing.T) {
 func TestPrepareSourceImagePullsAfterLocalInspectMiss(t *testing.T) {
 	patches := gomonkey.NewPatches()
 	defer patches.Reset()
+	disableEngineClient(t)
 	withExecutableLookPath(t, func(file string) (string, error) {
 		return "", errors.New("not found")
 	})
@@ -132,6 +145,7 @@ func TestPrepareSourceImagePullsAfterLocalInspectMiss(t *testing.T) {
 func TestPrepareSourceImageReturnsPullErrorAfterInspectMiss(t *testing.T) {
 	patches := gomonkey.NewPatches()
 	defer patches.Reset()
+	disableEngineClient(t)
 	withExecutableLookPath(t, func(file string) (string, error) {
 		return "", errors.New("not found")
 	})
@@ -1016,5 +1030,27 @@ func TestPrepareLocalSourceRequiresLocalDockerImage(t *testing.T) {
 	_, err := PrepareLocalSource(context.Background(), SourceSpec{ImageRef: "private.example/app:latest"})
 	if err == nil || !strings.Contains(err.Error(), "redo requires source image private.example/app:latest to still exist locally") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareLocalSourceRejectsInvalidImageRef(t *testing.T) {
+	invalidRefs := []string{
+		"",
+		"-rm -rf",
+		"image;rm -rf /",
+		"image$(whoami)",
+		"image\n--flag",
+	}
+	for _, ref := range invalidRefs {
+		_, err := PrepareLocalSource(context.Background(), SourceSpec{ImageRef: ref})
+		if err == nil {
+			t.Errorf("PrepareLocalSource(%q) returned nil error, want validation failure", ref)
+			continue
+		}
+		// validateImageRef returns "empty image reference" for blank refs
+		// and "invalid image reference" for refs with forbidden characters.
+		if !strings.Contains(err.Error(), "invalid image reference") && !strings.Contains(err.Error(), "empty image reference") {
+			t.Errorf("PrepareLocalSource(%q) error=%v, want validation failure", ref, err)
+		}
 	}
 }
